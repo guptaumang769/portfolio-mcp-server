@@ -1,0 +1,44 @@
+server:
+  port: 8093
+
+spring:
+  application:
+    name: portfolio-mcp-server
+  ai:
+    mcp:
+      server:
+        # MCP server identity, advertised to connecting hosts (Claude Desktop, IDEs, agents).
+        name: portfolio-mcp
+        version: 0.0.1
+        # 'sync' server over the WebMVC/SSE HTTP transport. stdio is OFF so this runs as a normal
+        # web server on :8093 — hosts connect over the SSE endpoint below.
+        # (To run over stdio for a local Claude Desktop launch instead, set stdio=true and disable
+        #  the web server / banner — see the README.)
+        type: sync
+        stdio: false
+        # SSE transport endpoints exposed by the WebMVC starter:
+        #   GET  /sse          -> opens the server-sent-events stream (this is the URL a host connects to)
+        #   POST /mcp/message  -> the client posts tool-call requests here
+        sse-endpoint: /sse
+        sse-message-endpoint: /mcp/message
+        capabilities:
+          tool: true
+
+# Base URLs of the two backends the MCP tools front. Start them on :8080 for live tool calls;
+# otherwise the tools report the backend is unavailable (they never throw).
+backends:
+  bookmyshow-base-url: ${BOOKMYSHOW_BASE_URL:http://localhost:8080}
+  uber-base-url: ${UBER_BASE_URL:http://localhost:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.umang.mcp: INFO
