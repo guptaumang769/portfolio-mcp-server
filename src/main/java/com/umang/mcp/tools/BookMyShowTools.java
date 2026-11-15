@@ -7,41 +7,21 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
-import org.springframework.web.reactive.function.client.WebClient;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.umang.mcp.http.BackendClient;
 
-import reactor.core.publisher.Mono;
-
-/**
- * BookMyShow tools, exposed over the Model Context Protocol.
- *
- * <p>Each public method annotated with {@link Tool} becomes an MCP tool. At startup Spring AI turns
- * every {@link Tool} method into a JSON function schema (name + description + typed params) and the
- * Spring AI MCP server (WebMVC/SSE transport) advertises it to any connected MCP host (Claude Desktop,
- * an IDE, a custom agent, ...). When a model — running in that host, not in this process — decides to
- * call a tool, the host sends an MCP {@code tools/call} request, this server deserializes the arguments,
- * invokes the method, and returns the String result over MCP so the model can OBSERVE it and continue.</p>
- *
- * <p>The {@code description} on each {@link Tool} is what the model reads to decide WHEN to call the tool,
- * so it is written for the model, not for humans.</p>
- *
- * <p>These call the real BookMyShow backend over HTTP via a {@link WebClient}. We deliberately do NOT
- * import any BookMyShow classes — the backend is treated as an opaque external HTTP service returning an
- * {@code ApiResponse<T>} envelope {@code {success, data, error}} which we unwrap here into concise,
- * model-friendly Strings. Every method degrades gracefully: if the backend is down we return a friendly
- * "backend unavailable" string rather than throwing, so the host/model can still respond.</p>
- */
 @Component
 public class BookMyShowTools {
 
     private static final Logger log = LoggerFactory.getLogger(BookMyShowTools.class);
 
-    private final WebClient webClient;
+    private final BackendClient backend;
 
-    public BookMyShowTools(WebClient bookMyShowClient) {
-        this.webClient = bookMyShowClient;
+    public BookMyShowTools(@Qualifier("bookMyShowBackend") BackendClient backend) {
+        this.backend = backend;
     }
 
     @Tool(description = "List all currently active movies playing in BookMyShow. "
@@ -49,9 +29,9 @@ public class BookMyShowTools {
             + "Returns each movie's id, title, language and genre. Use the returned movie id with listShows.")
     public String listMovies() {
         log.info("[tool] listMovies()");
-        JsonNode data = getJson("/api/v1/movies");
+        JsonNode data = backend.getJson("/api/v1/movies");
         if (data == null) {
-            return backendUnavailable("fetch the movie list");
+            return backend.unavailableMessage("fetch the movie list");
         }
         if (!data.isArray() || data.isEmpty()) {
             return "No active movies are currently listed.";
@@ -76,9 +56,9 @@ public class BookMyShowTools {
             + "Returns each show's id, screen/theatre and start time. Use the returned show id with availableSeats or bookSeats.")
     public String listShows(@ToolParam(description = "The numeric id of the movie, as returned by listMovies") long movieId) {
         log.info("[tool] listShows(movieId={})", movieId);
-        JsonNode data = getJson("/api/v1/movies/" + movieId + "/shows");
+        JsonNode data = backend.getJson("/api/v1/movies/" + movieId + "/shows");
         if (data == null) {
-            return backendUnavailable("fetch shows for movie " + movieId);
+            return backend.unavailableMessage("fetch shows for movie " + movieId);
         }
         if (!data.isArray() || data.isEmpty()) {
             return "No shows found for movie id=" + movieId + ".";
@@ -104,9 +84,9 @@ public class BookMyShowTools {
             + "Requires the numeric showId (from listShows). Returns available seat ids and labels.")
     public String availableSeats(@ToolParam(description = "The numeric id of the show, as returned by listShows") long showId) {
         log.info("[tool] availableSeats(showId={})", showId);
-        JsonNode data = getJson("/api/v1/shows/" + showId + "/seats");
+        JsonNode data = backend.getJson("/api/v1/shows/" + showId + "/seats");
         if (data == null) {
-            return backendUnavailable("check seats for show " + showId);
+            return backend.unavailableMessage("check seats for show " + showId);
         }
         if (!data.isArray() || data.isEmpty()) {
             return "No available seats for show id=" + showId + " (it may be sold out).";
@@ -137,9 +117,9 @@ public class BookMyShowTools {
                 "userId", userId,
                 "showId", showId,
                 "seatIds", seatIds == null ? List.of() : seatIds);
-        JsonNode data = postJson("/api/v1/bookings/initiate", body);
+        JsonNode data = backend.postJson("/api/v1/bookings/initiate", body);
         if (data == null) {
-            return backendUnavailable("initiate the booking");
+            return backend.unavailableMessage("initiate the booking");
         }
         String bookingId = data.path("id").asText(data.path("bookingId").asText("?"));
         String status = data.path("status").asText("INITIATED");
@@ -152,9 +132,9 @@ public class BookMyShowTools {
             + "Call this when the user asks about the state of a booking they already made. Requires the numeric bookingId.")
     public String bookingStatus(@ToolParam(description = "The numeric id of the booking, as returned by bookSeats") long bookingId) {
         log.info("[tool] bookingStatus(bookingId={})", bookingId);
-        JsonNode data = getJson("/api/v1/bookings/" + bookingId);
+        JsonNode data = backend.getJson("/api/v1/bookings/" + bookingId);
         if (data == null) {
-            return backendUnavailable("look up booking " + bookingId);
+            return backend.unavailableMessage("look up booking " + bookingId);
         }
         String status = data.path("status").asText("UNKNOWN");
         StringBuilder sb = new StringBuilder("Booking id=" + bookingId + " status=" + status);
@@ -165,71 +145,5 @@ public class BookMyShowTools {
             sb.append(", seats=").append(data.path("seatIds").toString());
         }
         return sb.toString();
-    }
-
-    // --- HTTP helpers: call the backend and unwrap the ApiResponse<T> { success, data, error } envelope. ---
-
-    /** GET the path, return the {@code data} node of the ApiResponse envelope, or null if the backend is unreachable. */
-    private JsonNode getJson(String path) {
-        try {
-            JsonNode envelope = webClient.get()
-                    .uri(path)
-                    .retrieve()
-                    .bodyToMono(JsonNode.class)
-                    .onErrorResume(ex -> {
-                        log.warn("[tool] GET {} failed: {}", path, ex.toString());
-                        return Mono.empty();
-                    })
-                    .block();
-            return unwrap(envelope);
-        } catch (Exception ex) {
-            log.warn("[tool] GET {} threw: {}", path, ex.toString());
-            return null;
-        }
-    }
-
-    /** POST the body to the path, return the {@code data} node of the ApiResponse envelope, or null if unreachable. */
-    private JsonNode postJson(String path, Object body) {
-        try {
-            JsonNode envelope = webClient.post()
-                    .uri(path)
-                    .bodyValue(body)
-                    .retrieve()
-                    .bodyToMono(JsonNode.class)
-                    .onErrorResume(ex -> {
-                        log.warn("[tool] POST {} failed: {}", path, ex.toString());
-                        return Mono.empty();
-                    })
-                    .block();
-            return unwrap(envelope);
-        } catch (Exception ex) {
-            log.warn("[tool] POST {} threw: {}", path, ex.toString());
-            return null;
-        }
-    }
-
-    /**
-     * Unwrap the {@code ApiResponse<T> { success, data, error }} envelope. Returns the {@code data} node,
-     * or null if the envelope is missing/unsuccessful. If the response is not enveloped (plain body),
-     * returns it as-is so the tools still work against a non-enveloped mock.
-     */
-    private JsonNode unwrap(JsonNode envelope) {
-        if (envelope == null || envelope.isNull()) {
-            return null;
-        }
-        if (envelope.has("success") || envelope.has("data")) {
-            if (envelope.has("success") && !envelope.path("success").asBoolean(true)) {
-                log.warn("[tool] backend returned success=false, error={}", envelope.path("error").toString());
-                return null;
-            }
-            JsonNode data = envelope.get("data");
-            return (data == null || data.isNull()) ? null : data;
-        }
-        return envelope; // not an envelope; use as-is
-    }
-
-    private String backendUnavailable(String action) {
-        return "The BookMyShow backend is currently unavailable, so I couldn't " + action
-                + ". Please make sure the backend is running (default http://localhost:8080) and try again.";
     }
 }

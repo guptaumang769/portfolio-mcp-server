@@ -14,20 +14,14 @@ import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.ExchangeFunction;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import com.umang.mcp.http.BackendClient;
+
 import reactor.core.publisher.Mono;
 
-/**
- * Pure unit tests for {@link BookMyShowTools} — no network, no MCP runtime.
- *
- * <p>We build a real {@link WebClient} on a stub {@link ExchangeFunction} that captures the outgoing
- * request (so we can assert the HTTP method + path) and returns a canned {@code ApiResponse} envelope
- * (so we can assert the tools UNWRAP {@code data} correctly and degrade gracefully on errors).</p>
- */
 class BookMyShowToolsTest {
 
     private final String baseUrl = "http://localhost:8080";
 
-    /** Build BookMyShowTools whose WebClient always returns the given JSON body, capturing the request. */
     private BookMyShowTools toolsReturning(String jsonBody, AtomicReference<ClientRequest> captured) {
         ExchangeFunction exchange = request -> {
             captured.set(request);
@@ -38,14 +32,13 @@ class BookMyShowToolsTest {
             return Mono.just(response);
         };
         WebClient client = WebClient.builder().baseUrl(baseUrl).exchangeFunction(exchange).build();
-        return new BookMyShowTools(client);
+        return new BookMyShowTools(new BackendClient(client, "BookMyShow"));
     }
 
-    /** Build BookMyShowTools whose WebClient always errors (simulates backend down). */
     private BookMyShowTools toolsFailing() {
         ExchangeFunction exchange = request -> Mono.error(new RuntimeException("connection refused"));
         WebClient client = WebClient.builder().baseUrl(baseUrl).exchangeFunction(exchange).build();
-        return new BookMyShowTools(client);
+        return new BookMyShowTools(new BackendClient(client, "BookMyShow"));
     }
 
     @Test
