@@ -13,16 +13,10 @@ import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.ExchangeFunction;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import com.umang.mcp.http.BackendClient;
+
 import reactor.core.publisher.Mono;
 
-/**
- * Pure unit tests for {@link UberTools} — no network, no MCP runtime.
- *
- * <p>Same approach as {@link BookMyShowToolsTest}: a real {@link WebClient} on a stub
- * {@link ExchangeFunction} captures the outgoing request (method + path + query) and returns a canned
- * {@code ApiResponse} envelope, so we can assert path building, query params, envelope unwrapping, and
- * graceful-on-error behaviour.</p>
- */
 class UberToolsTest {
 
     private final String baseUrl = "http://localhost:8080";
@@ -37,13 +31,13 @@ class UberToolsTest {
             return Mono.just(response);
         };
         WebClient client = WebClient.builder().baseUrl(baseUrl).exchangeFunction(exchange).build();
-        return new UberTools(client);
+        return new UberTools(new BackendClient(client, "Uber"));
     }
 
     private UberTools toolsFailing() {
         ExchangeFunction exchange = request -> Mono.error(new RuntimeException("connection refused"));
         WebClient client = WebClient.builder().baseUrl(baseUrl).exchangeFunction(exchange).build();
-        return new UberTools(client);
+        return new UberTools(new BackendClient(client, "Uber"));
     }
 
     @Test
